@@ -1,0 +1,179 @@
+---
+title: "MVP Prediction 2025"
+author: "Kemon Lardas"
+date: "2025-05-10"
+output: html_document
+---
+
+```{r libraries}
+library(nflverse)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+```
+
+```{r eda}
+load_season_stats <- function(year){
+
+    qb <- load_player_stats(year) %>%
+        filter(position == "QB"& season_type == "REG") %>%
+        group_by(player_display_name)  %>%
+        mutate(gp = length(player_display_name)) %>%
+        filter(gp >= 11) %>%
+        select('recent_team', 'season', 'player_display_name', 'week', 'completions', 'attempts', 'passing_tds', 
+               'rushing_tds', 'passing_yards', 'rushing_yards', 'passing_epa', 'rushing_epa', 'interceptions', 'carries')
+    
+    qb <- qb %>%
+        group_by(player_display_name) %>%
+        summarize(recent_team,
+                  season,
+                  cmp_percent = sum(completions)/sum(attempts),
+                  tot_pass_tds = sum(passing_tds),
+                  tot_rushing_tds = sum(rushing_tds),
+                  tot_tds = tot_pass_tds + tot_rushing_tds,
+                  tot_pass_yards = sum(passing_yards),
+                  tot_rush_yards = sum(rushing_yards),
+                  tot_yards = tot_pass_yards + tot_rush_yards,
+                  avg_pass_epa = mean(passing_epa, na.rm = TRUE),
+                  avg_rush_epa = mean(rushing_epa, na.rm = TRUE),
+                  tot_ints = sum(interceptions),
+                  td_int_ratio = tot_pass_tds/tot_ints) %>%
+        distinct(player_display_name, .keep_all = TRUE) %>%
+        ungroup() %>%
+        mutate(cmp_percent_rk = rank(-cmp_percent),
+               tot_tds_rk = rank(-tot_tds),
+               tot_yards_rk = rank(-tot_yards),
+               pass_epa_rk = rank(-avg_pass_epa)) %>%
+        rename(team = recent_team) 
+    
+    
+    home_ws <- load_schedules(year) %>%
+        filter(game_type == "REG") %>%
+        mutate(home_win = case_when(result > 0 ~ 1,
+                                    result < 0 ~ 0,
+                                    result == 0 ~ 0.5),
+               away_win = case_when(result > 0 ~ 0,
+                                    result < 0 ~ 1,
+                                    result == 0 ~ 0.5)
+               ) %>%
+        group_by(home_team) %>%
+        mutate(tot_home_wins = sum(home_win)) %>%
+        distinct(home_team, .keep_all = TRUE) %>%
+        ungroup() %>%
+        select(home_team, tot_home_wins)
+    
+    
+    away_ws <- load_schedules(year) %>%
+        filter(game_type == "REG") %>%
+        mutate(home_win = case_when(result > 0 ~ 1,
+                                    result < 0 ~ 0,
+                                    result == 0 ~ 0.5),
+               away_win = case_when(result > 0 ~ 0,
+                                    result < 0 ~ 1,
+                                    result == 0 ~ 0.5)
+               ) %>%
+        group_by(away_team) %>%
+        mutate(tot_away_wins = sum(away_win)) %>%
+        distinct(away_team, .keep_all = TRUE) %>%
+        ungroup() %>%
+        select(away_team, tot_away_wins)
+    
+    team_ws <- home_ws %>%
+      left_join(away_ws, by = c("home_team" = "away_team")) %>%
+        mutate(tot_wins = tot_home_wins + tot_away_wins,
+               win_rank  = rank(-tot_wins)) %>%
+        arrange(win_rank) %>%
+        rename(team = home_team)
+    
+    
+    
+    away_pts_allowed <- load_schedules(year) %>%
+        filter(game_type == "REG") %>%
+        group_by(away_team) %>%
+        summarize(tot_pts_allowed = mean(home_score, na.rm = TRUE)) %>%
+        rename(team = away_team)
+    
+    home_pts_allowed <- load_schedules(year) %>%
+        filter(game_type == "REG") %>%
+        group_by(home_team) %>%
+        summarize(tot_pts_allowed = mean(away_score, na.rm = TRUE)) %>%
+        rename(team = home_team)
+    
+    pts_allowed <- away_pts_allowed %>%
+        left_join(home_pts_allowed, by = "team") %>%
+        mutate(tot_pts_allowed = (tot_pts_allowed.x + tot_pts_allowed.y) / 2,
+               str_sched_rank = rank(-tot_pts_allowed))
+    
+    strength_sched <- team_ws %>%
+        left_join(pts_allowed, by = "team") %>%
+        select(team, tot_wins, win_rank, tot_pts_allowed, str_sched_rank) %>%
+        arrange(str_sched_rank) %>%
+        mutate(team = case_when(team == "SD" ~ "LAC",
+                                team == "STL" ~ "LA",
+                                team == "OAK" ~ "LV",
+                                TRUE ~ team))
+    
+    final_qb_data <- qb %>%
+        left_join(strength_sched, by = "team")
+    
+    return(final_qb_data)
+
+}
+```
+
+```{r training_testing_data}
+training_data <- rbind(load_season_stats(2002), load_season_stats(2004), load_season_stats(2007), load_season_stats(2008), load_season_stats(2009), load_season_stats(2010), load_season_stats(2011), load_season_stats(2013), load_season_stats(2014), load_season_stats(2015), load_season_stats(2016), load_season_stats(2017), 
+      load_season_stats(2018), load_season_stats(2019)) %>%
+    mutate(mvp = case_when(season == "2002" & player_display_name == "Rich Gannon" ~ 1,
+                           season == "2004" & player_display_name == "Peyton Manning" ~ 1,
+                           season == "2007" & player_display_name == "Tom Brady" ~ 1,
+                           season == "2008" & player_display_name == "Peyton Manning" ~ 1,
+                           season == "2009" & player_display_name == "Peyton Manning" ~ 1,
+                           season == "2010" & player_display_name == "Tom Brady" ~ 1,
+                           season == "2011" & player_display_name == "Aaron Rodgers" ~ 1,
+                           season == "2013" & player_display_name == "Peyton Manning" ~ 1,
+                           season == "2014" & player_display_name == "Aaron Rodgers" ~ 1,
+                           season == "2015" & player_display_name == "Cam Newton" ~ 1,
+                           season == "2016" & player_display_name == "Matt Ryan" ~ 1,
+                           season == "2017" & player_display_name == "Tom Brady" ~ 1,
+                           season == "2018" & player_display_name == "Patrick Mahomes" ~ 1,
+                           season == "2019" & player_display_name == "Lamar Jackson" ~ 1,
+                           TRUE ~ 0))
+
+training_data
+
+mod_func <- mvp ~ cmp_percent_rk + tot_tds_rk + tot_yards_rk + pass_epa_rk + win_rank + str_sched_rank
+
+model <- glm(mod_func, training_data, family = "binomial")
+```
+
+```{r testing_data}
+testing_data <- rbind(load_season_stats(2020), load_season_stats(2021), load_season_stats(2022), 
+      load_season_stats(2023), load_season_stats(2024))
+
+#testing_data <- load_season_stats(2020)
+
+prediction <- predict(model, testing_data, type = "response")
+
+mvp_pred <- cbind(testing_data, prediction)
+
+mvp_pred %>%
+    mutate(prediction = round(prediction, 4)) %>% 
+    filter(prediction > 0) %>%
+    select(player_display_name, season, prediction) %>%
+    group_by(season) %>%
+    slice_max(order_by = prediction, n = 2, with_ties = FALSE) %>%
+    ungroup() %>%
+    rename(Player = player_display_name) %>%
+    ggplot(aes(x = season, y = prediction)) +
+        geom_bar(stat = "identity", position = "dodge", aes(fill = Player)) + 
+        theme_classic() +
+        labs(title = "MVP Prediction by Season",
+            x = "Season",
+            y = "Prediction Probability")
+
+mvp_pred %>% filter(season == 2023) 
+
+# 20% accuracy from my model but where I was wrong my choice was the runner up that year with a training dataset of 2011 -2019
+# 40% accuracy with a training data set from 2002-2019, (only qb winners)
+```
